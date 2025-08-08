@@ -1,75 +1,62 @@
+# app.py
 import streamlit as st
-import pandas as pd
+from streamlit_autorefresh import st_autorefresh
 import joblib
-import shap
-import matplotlib.pyplot as plt
 import numpy as np
 
-# ======================
-# Load models and explainer
-# ======================
+from agent import AquaGuardAgent
+
+# Load or initialize agent
 @st.cache_resource
-def load_models():
-    pipeline = joblib.load("models/pipeline.joblib")
-    shap_data = joblib.load("models/shap_explainer.joblib")
-    return pipeline, shap_data
+def load_agent():
+    try:
+        return joblib.load("agent_state.joblib")
+    except:
+        return AquaGuardAgent()
 
-pipeline, shap_data = load_models()
-explainer = shap_data["explainer"]
-shap_values = shap_data["shap_values"]
-feature_names = shap_data["feature_names"]
+agent = load_agent()
 
-# ======================
-# UI
-# ======================
-st.set_page_config(page_title="Water Conservation Advisor", layout="centered")
-st.title("💧 Water Conservation Recommendation App")
-st.write("Enter your household details to get personalized water-saving suggestions.")
+st.title("AquaGuard Home Agent - Continuous Simulation")
 
-with st.form("input_form"):
-    household_size = st.number_input("Household size", min_value=1, max_value=10, value=3)
-    garden_size = st.selectbox("Garden size", ["none", "small", "medium", "large"])
-    has_dishwasher = st.selectbox("Has dishwasher?", ["No", "Yes"])
-    washing_frequency = st.number_input("Washing machine usage per week", min_value=1, max_value=20, value=5)
-    water_pressure = st.slider("Water pressure (bar)", min_value=1.0, max_value=5.0, step=0.1, value=3.0)
-    submitted = st.form_submit_button("Get Recommendations")
+# Auto refresh every 5 seconds, max 1000 times
+count = st_autorefresh(interval=5000, limit=1000, key="refresh")
 
-if submitted:
-    # Prepare input
-    input_df = pd.DataFrame([{
-        "household_size": household_size,
-        "garden_size": garden_size,
-        "has_dishwasher": 1 if has_dishwasher == "Yes" else 0,
-        "washing_frequency": washing_frequency,
-        "water_pressure": water_pressure
-    }])
+# Initialize session state
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-    # Predict
-    predictions = pipeline.predict(input_df)[0]
+# Simulate one cycle of perception -> reasoning -> action -> learning
+sample, recs = agent.simulate_and_recommend()
 
-    # Target names (must match training order)
-    target_cols = ["shower_shorter", "garden_optimize", "tap_off_brushing", "use_dishwasher", "fix_leaks", "optimize_washer"]
+# Simulate user feedback (simple heuristic or random)
+feedback = agent.simulate_feedback(sample, recs)
 
-    results = dict(zip(target_cols, predictions))
+# Agent learns from feedback
+agent.receive_feedback(sample, recs, feedback)
 
-    st.subheader("✅ Recommended Actions")
-    for action, value in results.items():
-        if value == 1:
-            st.write(f"**{action.replace('_', ' ').capitalize()}**")
+# Save updated agent state to disk for standalone script and next app load
+joblib.dump(agent, "agent_state.joblib")
 
-    # ======================
-    # SHAP explanation
-    # ======================
-    st.subheader("🔍 Why these recommendations?")
-    st.write("Feature importance for the first target model (shower_shorter):")
+# Record history for display
+st.session_state.history.append({
+    "sample": sample,
+    "recommendations": recs,
+    "feedback": feedback
+})
 
-    # Transform input for SHAP
-    preprocessor = pipeline.named_steps["preprocessor"]
-    X_transformed = preprocessor.transform(input_df)
+# Show latest cycle info
+st.subheader(f"Cycle #{len(st.session_state.history)}")
 
-    # SHAP values for the first classifier
-    shap_vals_first_target = explainer.shap_values(X_transformed)[1]  # Class 1 for first target
+st.markdown("### Simulated Input:")
+st.json(sample)
 
-    fig, ax = plt.subplots()
-    shap.bar_plot(shap_vals_first_target[0], feature_names=feature_names, max_display=10, show=False)
-    st.pyplot(fig)
+st.markdown("### Recommendations:")
+for r in recs:
+    st.write(f"- {r}")
+
+st.markdown("### User Feedback:")
+st.json(feedback)
+
+# Optionally show full history or stats
+if st.checkbox("Show full history"):
+    st.write(st.session_state.history)
